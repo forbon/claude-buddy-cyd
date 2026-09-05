@@ -42,6 +42,25 @@ static uint16_t tintColor(uint16_t c) {
   if (r > 31) r = 31;
   if (g > 63) g = 63;
   if (b > 31) b = 31;
+  // Warm pixels get zero blue. This panel's transfer curve saturates somewhere
+  // between B=3 and B=8 of 31: attention.gif's bulb glass (B=3) renders as the
+  // gold it should be, while coral (B=8) has its blue pulled to maximum and
+  // washes out to white. Yellow and orange are defined by absent blue, so the
+  // only way to keep them is to send none.
+  //
+  // Relative to the pixel's own red, not an absolute cutoff -- a flat threshold
+  // fell between idle's coral (B=10 raw) and sleep's (B=11). Greys, whites and
+  // real blues keep theirs: their blue is at least half their red.
+  // ponytail: measured on one unit; drop this block to get the panel's own look.
+  if (b * 2 < r) {
+    b = 0;
+    // Green needs damping too, for the same reason: with blue gone, coral's
+    // 46% green still lands near the top of the curve and the result reads
+    // yellow rather than orange-red. 60% is the eyeball-tuned knob -- raise it
+    // if the gold helmet and the bulb turn too orange, lower it if Clawd stays
+    // yellow. Everything warm shifts together; there is no per-hue split.
+    g = g * 60 / 100;
+  }
   return (uint16_t)((r << 11) | (g << 5) | b);
 }
 static AnimatedGIF gif;

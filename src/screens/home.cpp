@@ -47,6 +47,24 @@ static bool tickTowardI(int &d, int target) {
   return true;
 }
 
+// The card's two headline numbers: the plan usage windows when the PC feeds
+// them (statusline -> hook -> here), else the token odometer. Returns true when
+// the limits are what's shown, so the labels can follow.
+static bool limitCells(char *a, size_t na, char *b, size_t nb) {
+  net::AppState &s = net::ble.state();
+  if (s.rl5 < 0) {
+    fmtTok(dToday, a, na);
+    fmtTok(dAll, b, nb);
+    return false;
+  }
+  snprintf(a, na, "%d%%", s.rl5);
+  if (s.rl7 < 0)
+    snprintf(b, nb, "-");
+  else
+    snprintf(b, nb, "%d%%", s.rl7);
+  return true;
+}
+
 // Draw one centered value cell. Rendered via an off-screen sprite (blitText) so a
 // rolling counter updates without flashing its cleared background each frame.
 static void drawCell(int cx, int y, const char *v, uint16_t col,
@@ -64,8 +82,7 @@ static char pT[12], pA[12], pD[14], pNt[8], pNu[8], pNs[8];
 // only cells whose text changed are redrawn, so a settled value never flickers.
 static void drawStatValues(int W, int cy, bool force) {
   char tok[12], all[12], dur[14], nt[8], nu[8], ns[8];
-  fmtTok(dToday, tok, sizeof(tok));
-  fmtTok(dAll, all, sizeof(all));
+  limitCells(tok, sizeof(tok), all, sizeof(all));
   fmtDur(ctx.sessionStart ? (millis() - ctx.sessionStart) : 0, dur, sizeof(dur));
   snprintf(nt, sizeof(nt), "%d", dTools);
   snprintf(nu, sizeof(nu), "%d", dTurns);
@@ -124,7 +141,11 @@ static void drawBudgetBar(TFT_eSPI &c, int W, int cyAbs, int yOrg,
   net::AppState &s = net::ble.state();
   int bx = 20, bw = W - 40, by = cyAbs - yOrg + 38, bh = 4;
   c.fillRoundRect(bx, by, bw, bh, 2, p.divider); // track
-  double frac = s.budget > 0 ? (double)dToday / (double)s.budget : 0;
+  // The 5h window outranks the token budget when we have it: it's the limit you
+  // actually hit, and it's authoritative rather than a self-set target.
+  double frac = s.rl5 >= 0        ? (double)s.rl5 / 100.0
+                : s.budget > 0    ? (double)dToday / (double)s.budget
+                                  : 0;
   if (frac > 1)
     frac = 1;
   int fw = (int)(bw * frac);
@@ -173,20 +194,27 @@ void drawStatsPage(TFT_eSPI &c, int yOrg, const char *st,
   c.fillRoundRect(8, cy, W - 16, chh, 12, p.card);
   gtextClampC(c, headlineText(st), W / 2, cy + 18, &FreeSansBold12pt7b, p.text,
               p.card, MC_DATUM, W - 32);
-  if (s.budget > 0)
+  if (s.budget > 0 || s.rl5 >= 0)
     drawBudgetBar(c, W, cyA, yOrg, p);
   else
     c.drawFastHLine(20, cy + 40, W - 40, p.divider);
   int yA = cy + 54, yB = cy + 96;
-  gtextC(c, "Today", W / 4, yA, &FreeSans9pt7b, p.muted, p.card, TC_DATUM);
-  gtextC(c, "Total", W * 3 / 4, yA, &FreeSans9pt7b, p.muted, p.card, TC_DATUM);
+  char tok[12], all[12], dur[14], nt[8], nu[8], ns[8];
+  bool lim = limitCells(tok, sizeof(tok), all, sizeof(all));
+  // Labels double as the reset clock. The 5h cell keeps its tag ("5h 21:30");
+  // the weekly one is just the weekday and time ("Wed 10:00") -- the weekday is
+  // its own tag, and a "7d " prefix measures 112px against the 96px a cell
+  // centred at 3W/4 has before it runs off the card (worst case "Wed").
+  String l5 = lim ? "5h " + s.rl5At : String("Today");
+  String l7 = lim ? s.rl7At : String("Total");
+  gtextClampC(c, l5.c_str(), W / 4, yA, &FreeSans9pt7b, p.muted, p.card,
+              TC_DATUM, W / 2 - 24);
+  gtextClampC(c, l7.c_str(), W * 3 / 4, yA, &FreeSans9pt7b, p.muted, p.card,
+              TC_DATUM, W / 2 - 24);
   gtextC(c, "Tools", W / 8, yB, &FreeSans9pt7b, p.muted, p.card, TC_DATUM);
   gtextC(c, "Turns", W * 3 / 8, yB, &FreeSans9pt7b, p.muted, p.card, TC_DATUM);
   gtextC(c, "Sess", W * 5 / 8, yB, &FreeSans9pt7b, p.muted, p.card, TC_DATUM);
   gtextC(c, "Time", W * 7 / 8, yB, &FreeSans9pt7b, p.muted, p.card, TC_DATUM);
-  char tok[12], all[12], dur[14], nt[8], nu[8], ns[8];
-  fmtTok(dToday, tok, sizeof(tok));
-  fmtTok(dAll, all, sizeof(all));
   fmtDur(ctx.sessionStart ? (millis() - ctx.sessionStart) : 0, dur,
          sizeof(dur));
   snprintf(nt, sizeof(nt), "%d", dTools);
@@ -299,10 +327,16 @@ void rollStats(uint32_t now, const char *st) {
     renderTrends(false);
     return;
   }
+  static int lastRl5 = -2, lastRl7 = -2;
+  if (s.rl5 != lastRl5 || s.rl7 != lastRl7) {
+    lastRl5 = s.rl5;
+    lastRl7 = s.rl7;
+    ch = true;
+  }
   if (ch) {
     int W = tft().width();
     drawStatValues(W, REG_Y + REG_H + 4, false);
-    if (s.budget > 0) // ease the gauge with the counter
+    if (s.budget > 0 || s.rl5 >= 0) // ease the gauge with the counter
       drawBudgetBar(tft(), W, REG_Y + REG_H + 4, 0, ui::PAL_RGB);
   }
 }

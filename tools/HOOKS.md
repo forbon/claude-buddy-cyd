@@ -16,7 +16,8 @@ device is off.
 ```json
 { "token": "<the token shown on the device>" }
 ```
-The CYD shows its `token` under long-press → **Settings → Stats**. Optional
+The CYD shows its `token` under long-press → the **Menu**, below the tiles
+(also on the serial boot log as `[auth] token=…`). Optional
 keys: `"port"` (move the bridge off `127.0.0.1:8787`), `"budget"` (daily token
 gauge), `"host"` (advanced: point the hook at a bridge on **another** machine,
 e.g. `"192.0.2.10:8787"` — see §4). One PC-side dependency:
@@ -62,6 +63,55 @@ Claude as the permission decision. **Fail-open guarantees:** if the device is
 unreachable, or you don't tap within ~26 s, the hook prints nothing and Claude
 falls back to the **normal terminal prompt** — you're never blocked. Leave this
 hook out entirely to keep the device purely a dashboard.
+
+You can also switch it off **on the device** — long-press → **Menu → Settings →
+Ask on device: off**. The device then answers the bridge with `pass` the moment
+the ask arrives, so the hook returns immediately and you get the terminal prompt
+without sitting through the timeout. Handy when you walk away from the desk but
+don't want to touch `settings.json`.
+
+## 2.2 Optional: plan-limit gauges (status line)
+
+Want the card's two headline numbers to be **how much of your 5-hour and weekly
+limits you've spent**, instead of today's and all-time tokens? That data exists
+in exactly one place on your machine: the JSON Claude Code pipes into your
+**status line**. It is not in hook payloads, not in the transcripts, and there is
+no `claude usage` command — so without a status line there is nothing to show,
+and the device keeps its token counters.
+
+Have your status line script write the two windows to `~/.claude/buddy_rl.json`:
+
+```json
+{"five_hour": {"pct": 72.4, "resets_at": 1788625885},
+ "seven_day": {"pct": 41,   "resets_at": 1788888085}}
+```
+
+`pct` is `rate_limits.<window>.used_percentage` and `resets_at` is that window's
+`resets_at` (Unix epoch seconds), both straight out of the status line's stdin
+JSON. The buddy hook reads the file on its next event and forwards the
+percentages plus each window's reset time, formatted in your local timezone
+(the device has no clock) — so the status line does **no** network I/O and stays
+fast. PowerShell:
+
+```powershell
+if ($data.rate_limits) {
+    $rl = @{
+        five_hour = @{ pct = $data.rate_limits.five_hour.used_percentage; resets_at = $data.rate_limits.five_hour.resets_at }
+        seven_day = @{ pct = $data.rate_limits.seven_day.used_percentage; resets_at = $data.rate_limits.seven_day.resets_at }
+    } | ConvertTo-Json -Compress
+    $rlPath = Join-Path $HOME '.claude\buddy_rl.json'
+    try {
+        if (-not (Test-Path $rlPath) -or (Get-Content $rlPath -Raw -EA Stop) -ne $rl) {
+            Set-Content -Path $rlPath -Value $rl -Encoding utf8 -NoNewline -EA Stop
+        }
+    } catch { }   # a side channel must never break the status line
+}
+```
+
+**Fail-safe by design:** the file is ignored when it's missing or older than an
+hour, `rate_limits` is absent for API-key users, and a missing `five_hour` drops
+the gauge entirely. In every one of those cases the card falls back to Today /
+Total tokens rather than showing a confident `0%`.
 
 ## 3. What it sends
 

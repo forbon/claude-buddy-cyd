@@ -76,7 +76,9 @@ class DecisionStore:
             d = json.loads(bytes(data).decode("utf-8")).get("decision", "")
         except Exception:
             return
-        if d in ("allow", "deny"):
+        # "pass" = the device has on-device approvals switched off; relay it so
+        # the hook can fail open at once instead of polling out its timeout.
+        if d in ("allow", "deny", "pass"):
             with self._lock:
                 self._decision = d
 

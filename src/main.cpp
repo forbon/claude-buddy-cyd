@@ -72,13 +72,14 @@ static uint32_t lastLoops = 0;
 
 // settings / stats screens (long-press to open settings)
 static bool settingsOpen = false;
+static int menuPage = 0; // 0 = tile menu, 1 = settings (prefs) page
 static bool statsOpen = false;
 static bool askOpen = false;       // on-device "Allow this tool?" prompt
 static uint32_t askShownAt = 0;    // for the auto-dismiss timeout
 static uint32_t pressStart = 0;
 static bool longFired = false;
 
-#define SCREEN_OFF_MS 30000UL
+#define SCREEN_OFF_MS 30000UL // menu/panel auto-close (screen-off: ctx.screenOffMs)
 #define BUSY_OFF_MS 180000UL // while Claude works: longer leash, then sleep too
 #define PRESLEEP_MS 8000UL // dim the backlight this long before the full cut-off
 #define AUTO_SLEEP_MS 3600000UL // dark + no events this long -> deep sleep
@@ -125,9 +126,9 @@ static const char *stateName(uint32_t now) {
 
 static int effectiveBright(); // ambient-light section below
 
-static void handleSettingsTap(int x, int y) {
+static void handleMenuTap(int x, int y) {
   for (int i = 0; i < 6; i++) {
-    if (!inRect(setBtns[i], x, y))
+    if (!inRect(menuTiles[i], x, y))
       continue;
     if (i == 0) { // power off -> deep sleep (tap screen / RST to wake)
       powerOff(display, touch, led, storage); // does not return
@@ -140,7 +141,7 @@ static void handleSettingsTap(int x, int y) {
       storage.putInt("dnd", ctx.dnd ? 1 : 0);
       if (ctx.dnd)
         led.off(); // apply the LED silence immediately
-      renderSettings();
+      renderSettings(menuPage);
     } else if (i == 3) { // cycle 100 -> 70 -> 40 -> auto (LDR night-dim)
       if (ctx.autoDim) {
         ctx.autoDim = false;
@@ -157,14 +158,55 @@ static void handleSettingsTap(int x, int y) {
       display.backlight(true); // apply immediately
       storage.putInt("bright", ctx.brightPct);
       storage.putInt("adim", ctx.autoDim ? 1 : 0);
-      renderSettings();
-    } else if (i == 4) { // recalibrate touch (shows visible targets)
-      settingsOpen = false;
-      touch.calibrate(display);
-      forceRedraw = true;
+      renderSettings(menuPage);
+    } else if (i == 4) { // open the settings (prefs) page
+      menuPage = 1;
+      renderSettings(menuPage);
     } else { // close (i == 5)
       settingsOpen = false;
       forceRedraw = true;
+    }
+    return;
+  }
+}
+
+static void handlePrefsTap(int x, int y) {
+  for (int i = 0; i < 7; i++) {
+    if (!inRect(setBtns[i], x, y))
+      continue;
+    if (i == 0) { // screen-off timeout: 30s -> 1min -> 5min -> never
+      uint32_t sec = ctx.screenOffMs / 1000;
+      sec = sec == 30 ? 60 : sec == 60 ? 300 : sec == 300 ? 0 : 30;
+      ctx.screenOffMs = sec * 1000UL;
+      storage.putInt("scroff", (int)sec);
+      if (!sec)
+        display.glideTo(effectiveBright()); // undo a pre-sleep fade in progress
+      renderSettings(menuPage);
+    } else if (i == 1) { // auto deep sleep after an idle hour
+      ctx.autoSleep = !ctx.autoSleep;
+      storage.putInt("dsleep", ctx.autoSleep ? 1 : 0);
+      renderSettings(menuPage);
+    } else if (i == 2) { // wake the screen when Claude starts working
+      ctx.wakeOnWork = !ctx.wakeOnWork;
+      storage.putInt("wakew", ctx.wakeOnWork ? 1 : 0);
+      renderSettings(menuPage);
+    } else if (i == 3) { // screen-wake nudge delay: 45s -> 2min -> 5min -> off
+      uint32_t sec = ctx.nudgeMs / 1000;
+      sec = sec == 45 ? 120 : sec == 120 ? 300 : sec == 300 ? 0 : 45;
+      ctx.nudgeMs = sec * 1000UL;
+      storage.putInt("nudge", (int)sec);
+      renderSettings(menuPage);
+    } else if (i == 4) { // tap Allow/Deny here instead of in the terminal
+      ctx.askOnDevice = !ctx.askOnDevice;
+      storage.putInt("askdev", ctx.askOnDevice ? 1 : 0);
+      renderSettings(menuPage);
+    } else if (i == 5) { // recalibrate touch (shows visible targets)
+      settingsOpen = false;
+      touch.calibrate(display);
+      forceRedraw = true;
+    } else { // back to the tile menu (i == 6)
+      menuPage = 0;
+      renderSettings(menuPage);
     }
     return;
   }
@@ -230,7 +272,7 @@ static void pollBootButton(uint32_t now) {
       delay(120);
       led.off(); // the next driveLed tick repaints the proper state
       if (settingsOpen)
-        renderSettings(); // refresh the Quiet row if it's on screen
+        renderSettings(menuPage); // refresh the Quiet tile if it's on screen
       lastInteraction = now;
     }
     return;
@@ -291,10 +333,19 @@ void setup() {
   ctx.dnd = storage.getInt("dnd", storage.getInt("quiet", 0) >= 1 ? 1 : 0) != 0;
   ctx.brightPct = storage.getInt("bright", 100);
   ctx.autoDim = storage.getInt("adim", 0) != 0;
+  ctx.screenOffMs = (uint32_t)storage.getInt("scroff", 30) * 1000UL;
+  ctx.autoSleep = storage.getInt("dsleep", 1) != 0;
+  ctx.wakeOnWork = storage.getInt("wakew", 1) != 0;
+  ctx.nudgeMs = (uint32_t)storage.getInt("nudge", 45) * 1000UL;
+  ctx.askOnDevice = storage.getInt("askdev", 1) != 0;
   display.setBrightness(effectiveBright());
   display.backlight(true);
 
-  net::ble.setToken(loadOrCreateToken(storage));
+  // ponytail: token over serial, not on the Stats panel -- 13 rows + the hint
+  // already fill 320px, and you only need it once to write ~/.claude/buddy.json.
+  String tok = loadOrCreateToken(storage);
+  Serial.printf("[auth] token=%s\n", tok.c_str());
+  net::ble.setToken(tok);
 
   // restore the last stats snapshot so a replug shows the previous numbers
   // immediately (the next hook event re-asserts the authoritative totals).
@@ -332,6 +383,16 @@ void loop() {
   historyNote(s.date, s.tokens); // per-day ring for the trends card
   historySaveIfChanged(storage, false);
 
+  // ---- the card's two big labels carry the plan-limit reset times, and only
+  //      a full repaint draws labels -> force one whenever that text changes
+  //      (data arriving or going away, and each window rollover) ----
+  static String lastLabels = "?";
+  String labels = s.rl5 >= 0 ? s.rl5At + "|" + s.rl7At : String("");
+  if (labels != lastLabels) {
+    lastLabels = labels;
+    forceRedraw = true;
+  }
+
   // ---- transient hook effect (attention/celebrate/heart): edge-trigger once
   //      per event; wakes the screen so a "needs you" / "done" isn't missed ----
   static uint32_t lastFxId = 0;
@@ -356,19 +417,27 @@ void loop() {
   static uint32_t lastAskId = 0;
   if (s.askId != lastAskId) {
     lastAskId = s.askId;
-    askOpen = true;
-    askShownAt = now;
-    settingsOpen = statsOpen = false;
-    if (!screenOn) {
-      screenOn = true;
-      setCpuFrequencyMhz(240); // back to full speed on wake
-      display.backlight(true);
+    if (!ctx.askOnDevice) {
+      // Approvals are off on the device. Answer "pass" straight away so the
+      // hook stops polling and falls back to Claude's own prompt NOW, instead
+      // of the user staring at a stalled terminal for the full ~26 s timeout.
+      s.decision = "pass";
+      s.decidedId = s.askId;
+    } else {
+      askOpen = true;
+      askShownAt = now;
+      settingsOpen = statsOpen = false;
+      if (!screenOn) {
+        screenOn = true;
+        setCpuFrequencyMhz(240); // back to full speed on wake
+        display.backlight(true);
+      }
+      lastInteraction = now;
+      wasTouched = true;
+      pressStart = now;
+      longFired = true;
+      renderAsk();
     }
-    lastInteraction = now;
-    wasTouched = true;
-    pressStart = now;
-    longFired = true;
-    renderAsk();
   }
 
   // ---- "your turn" waiting nudge: stamp when a fresh wait began (waitId edge),
@@ -438,9 +507,9 @@ void loop() {
   prevRunning = s.running;
   if (!screenOn) {
     bool nudgeWake = s.waiting && !autoWakeBlocked() && !waitAcked && waitStart &&
-                     (now - waitStart > 45000) &&
+                     ctx.nudgeMs && (now - waitStart > ctx.nudgeMs) &&
                      timeBefore(lastNudgeWake, waitStart);
-    if (touch.rawPressed() || runStarted || nudgeWake) {
+    if (touch.rawPressed() || (runStarted && ctx.wakeOnWork) || nudgeWake) {
       if (nudgeWake)
         lastNudgeWake = now; // fire the screen-wake just once per wait episode
       screenOn = true;
@@ -462,7 +531,7 @@ void loop() {
       bool noTouch = now - lastInteraction > AUTO_SLEEP_MS;
       bool noEvents = lastEventMs == 0 ? now > AUTO_SLEEP_MS
                                        : now - lastEventMs > AUTO_SLEEP_MS;
-      if (noTouch && noEvents)
+      if (ctx.autoSleep && noTouch && noEvents)
         powerOff(display, touch, led, storage, "Auto sleep"); // does not return
       // idle throttle: ~25 Hz is plenty to catch a tap or an incoming event,
       // and runs the (otherwise idle) loop body 4x less often than before
@@ -518,12 +587,15 @@ void loop() {
   if (settingsOpen) {
     if (tap) {
       lastInteraction = now;
-      handleSettingsTap(tx, ty);
+      if (menuPage)
+        handlePrefsTap(tx, ty);
+      else
+        handleMenuTap(tx, ty);
     }
     wasTouched = t;
     if (forceRedraw && settingsOpen) {
       forceRedraw = false;
-      renderSettings();
+      renderSettings(menuPage);
     }
     delay(5);
     return;
@@ -551,9 +623,10 @@ void loop() {
   if (t && !longFired && now - pressStart > LONG_PRESS_MS) {
     longFired = true;
     settingsOpen = true;
+    menuPage = 0; // always land on the tile menu, not wherever we left off
     lastInteraction = now;
     wasTouched = t;
-    renderSettings();
+    renderSettings(menuPage);
     delay(5);
     return;
   }
@@ -625,9 +698,15 @@ void loop() {
   //      shouldn't keep the backlight burning the battery. Fresh work, nudges
   //      and fx still wake the screen, so nothing important goes unseen. ----
   bool quiet = !timeBefore(now, dizzyUntil) && !timeBefore(now, fxUntil);
-  uint32_t offAfter = s.running > 0 ? BUSY_OFF_MS : SCREEN_OFF_MS;
+  // "Screen off: never" keeps the backlight lit indefinitely; otherwise a
+  // working session gets the longer of the two leashes, so a marathon turn
+  // isn't cut short by a 30 s preference.
+  bool mayOff = ctx.screenOffMs != 0;
+  uint32_t offAfter = (s.running > 0 && BUSY_OFF_MS > ctx.screenOffMs)
+                          ? BUSY_OFF_MS
+                          : ctx.screenOffMs;
   uint32_t idleFor = now - lastInteraction;
-  if (screenOn && quiet && idleFor > offAfter) {
+  if (screenOn && mayOff && quiet && idleFor > offAfter) {
     screenOn = false;
     dimmed = false;
     setCard(0); // wake back up on the familiar stats page
@@ -640,7 +719,7 @@ void loop() {
   } else if (screenOn) {
     // pre-sleep fade: ease the backlight down in the last PRESLEEP_MS so the
     // cut-off isn't an abrupt blackout (also a subtle "about to sleep" cue).
-    bool wantDim = quiet && idleFor > (offAfter - PRESLEEP_MS);
+    bool wantDim = mayOff && quiet && idleFor > (offAfter - PRESLEEP_MS);
     if (wantDim && !dimmed) {
       dimmed = true;
       display.glideTo(20); // ease down instead of snapping

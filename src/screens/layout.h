@@ -9,8 +9,11 @@ namespace screens {
 // "Got it" pill on the needs-you screen.
 extern ui::Rect denyBtn, approveBtn;
 extern ui::Rect ackBtn; // "Got it" pill on the needs-you screen (dismisses -> idle)
-// Settings: Power off / Stats / Quiet / Brightness / Recalibrate / Close
-extern ui::Rect setBtns[6];
+// Settings page rows: screen-off / deep sleep / wake-on-work / nudge /
+// ask-on-device / recalibrate / back
+extern ui::Rect setBtns[7];
+// Menu tiles (2 x 3): Power off / Stats / Quiet / Brightness / Settings / Close
+extern ui::Rect menuTiles[6];
 
 void computeButtons(TFT_eSPI &t);
 

@@ -112,8 +112,12 @@ alert (just the amber Clawd and a **Got it** button); tapping **Got it** drops
 the device straight back to idle (LED off) until the next time Claude needs you.
 Dismissing is local — it doesn't reply to Claude.
 
-**Stats card** (bottom): two headline figures — **Today** and **Total** tokens —
-over four compact counts: **Tools** (tool calls), **Turns** (assistant turns),
+**Stats card** (bottom): two headline figures — **Today** and **Total** tokens
+(or **5h limit** and **Week**, in percent, when your status line feeds the plan
+windows — [HOOKS.md §2.2](tools/HOOKS.md#22-optional-plan-limit-gauges-status-line);
+the two labels then carry each window's reset time — `5h 18:30`, `Wed 10:00`
+— the card's divider becomes the limit bar, coral → amber → red, and the exact
+figures move into **Menu → Stats**) — over four compact counts: **Tools** (tool calls), **Turns** (assistant turns),
 **Sess** (sessions today), **Time** (current session duration). The numbers
 roll like an odometer when they change. The card has two pages sitting side by
 side — **swipe left** and the **Trends card** slides in from the right: a bar
@@ -121,7 +125,7 @@ per day for the last 14 days (today in coral, still growing live) with a 7-day
 total and daily average — the device keeps a 30-day history in flash, dated by
 the PC so it needs no clock of its own. **Swipe right** to slide back; swiping
 past the end just rubber-bands. A fuller, live-updating panel is under
-long-press → **Settings → Stats** (adds project name, battery estimate, uptime,
+long-press → **Menu → Stats** (adds project name, battery estimate, uptime,
 free heap, BLE link state).
 
 **Ambient cues.** The onboard RGB LED speaks a colour language — a slow blue
@@ -154,7 +158,7 @@ pins. Two ways to feed it:
 
 - **Wired (simplest).** Any USB power source — a phone charger, a PC port, a
   power strip with USB. Nothing to configure. The top-bar battery glyph and the
-  Settings **Battery** row assume the battery setup below; on wall power just
+  Menu's **Stats** battery row assumes the battery setup below; on wall power just
   ignore them.
 - **Battery.** Reference setup: a **2000 mAh Li-ion cell + a cheap
   charge/discharge boost module** (the "charge + 5 V boost in one board" kind).
@@ -165,13 +169,13 @@ pins. Two ways to feed it:
     USB-C input usually lacks the CC handshake resistors, so a **USB-C PD
     charger with a C-to-C cable delivers nothing** (no LED, no charge) — use a
     USB-A charger / power-bank A-port with an A-to-C (or A-to-micro) cable.
-  - **Charge with the buddy powered off** (Settings → Power off) if you want
+  - **Charge with the buddy powered off** (Menu → Power off) if you want
     the module's "full" LED to be truthful — the running device's draw keeps
     cheap chargers from ever terminating.
   - The firmware ships a **software battery gauge** for exactly this setup:
     the device has no data path to the cell, so it estimates charge from its
     own consumption model (see `docs/battery-gauge-spec.md`). Top-bar glyph
-    (amber &lt;20%, red &lt;10%) and a **Battery (est)** row in Settings →
+    (amber &lt;20%, red &lt;10%) and a **Battery (est)** row in Menu →
     Stats. It's **fully automatic and death-anchored**: run the device until
     the cell actually dies (the module's protection board guards the cell;
     stats checkpoint every minute near the end), charge it, power it on — the
@@ -231,8 +235,9 @@ driver/colour-order flags (e.g. `ST7789_DRIVER` + `TFT_RGB_ORDER=TFT_BGR`).
 
 1. **Flash** firmware + filesystem (above). The device boots straight to the
    dashboard and starts advertising over BLE — there is nothing to provision.
-2. **Read its token:** long-press → **Settings → Stats**. The token is a random
-   secret generated on the device.
+2. **Read its token:** long-press → the **Menu**; the 16 hex chars sit under
+   the tiles. A random secret the device generated on first boot and keeps in
+   NVS across flashes. (Also on the serial boot log as `[auth] token=…`.)
 3. **Install the one PC dependency:** `python -m pip install bleak`
    (the BLE library the bridge uses; everything else is stdlib).
 4. **Tell your PC the secret** — `~/.claude/buddy.json`:
@@ -286,19 +291,40 @@ merged); if two machines push at once, the device shows whichever pushed last.
 - **BOOT key** (the physical button next to RST) — short press wakes the screen
   or taps **Got it** for you; holding it toggles **Quiet** (one red blink = on,
   green = off). Handy when tapping the resistive panel is inconvenient.
-- **Long-press (~1 s)** — open **Settings**: **Power off** (top row, in red —
-  deep sleep: screen, LED and radio off; tap the screen or press the board's
-  **RST** button to turn it back on), **Stats** (full live panel),
-  **Quiet** (on/off Do Not Disturb — silences the RGB LED and stops the screen
-  auto-waking for nudges; only your touch wakes it), **Brightness** (cycle the
-  backlight 100 / 70 / 40 % / **auto** — auto night-dims to 25% when the onboard
-  light sensor says the room went dark, and eases back up when the lights come
-  on), **Recalibrate** (3-point touch calibration; times out safely
-  if you walk away), **Close**. Quiet and brightness persist across reboots.
-- Auto **screen-off after 30 s** of calm — or **3 min while Claude is working**,
-  so long grinds go dark too; a touch, a fresh turn starting, or a nudge wakes
-  it. After **an hour** with no touch and no Claude activity at all the device
-  deep-sleeps itself (tap to wake).
+- **Long-press (~1 s)** — open the **Menu**, six tiles in two columns:
+  **Power off** (first tile, in red — deep sleep: screen, LED and radio off;
+  tap the screen or press the board's **RST** button to turn it back on),
+  **Stats** (full live panel), **Quiet** (on/off Do Not Disturb — silences the
+  RGB LED and stops the screen auto-waking for nudges; only your touch wakes
+  it), **Brightness** (cycle the backlight 100 / 70 / 40 % / **auto** — auto
+  night-dims to 25% when the onboard light sensor says the room went dark, and
+  eases back up when the lights come on), **Settings**, **Close**. The tiles
+  that hold a value show it underneath, so the menu reads at a glance.
+- **Menu → Settings** — the preferences, one tap per row to cycle:
+  - **Screen off** — `30s` / `1min` / `5min` / **`never`**. `never` keeps the
+    backlight lit for good (handy on wall power, or while you watch a long run).
+  - **Deep sleep** — `after 1h` / `off`. Only reachable from a dark screen, so
+    it does nothing while *Screen off* is `never` (the page says so).
+  - **Wake on work** — `on` / `off`. Off keeps a sleeping screen dark when
+    Claude starts a turn; only your touch (or an escalated nudge) lights it.
+  - **Nudge screen** — `45s` / `2min` / `5min` / `off`: how long an unanswered
+    turn sits before the dark screen lights itself once. `off` leaves the nudge
+    to the LED alone. (Quiet still overrides both.)
+  - **Ask on device** — `on` / `off` for the optional
+    [`PermissionRequest` hook](tools/HOOKS.md#21-optional-approve-tool-calls-on-the-device-permissionrequest).
+    `off` answers the bridge immediately, so Claude drops back to its normal
+    terminal prompt at once instead of waiting out the ~26 s timeout — the way
+    to stop the gadget from gating tool calls without editing hooks on the PC.
+  - **Recalibrate touch** — 3-point calibration; times out safely if you walk
+    away. **Back** returns to the tiles.
+
+  Every setting here — like Quiet and brightness — persists in NVS across
+  reboots and reflashes.
+- Auto **screen-off after the chosen timeout** (30 s by default) of calm — a
+  working session always gets at least **3 min**, so long grinds go dark too;
+  a touch, a fresh turn starting, or a nudge wakes it. After **an hour** with no
+  touch and no Claude activity at all the device deep-sleeps itself (tap to
+  wake), unless *Deep sleep* is off.
 
 ## How usage is counted
 
@@ -339,7 +365,7 @@ Ordered by how much they save (all automatic):
   measured, before the screen), and advertising while unconnected is cheaper
   still.
 
-For a manual off, **Settings → Power off** deep-sleeps the same way. On
+For a manual off, **Menu → Power off** deep-sleeps the same way. On
 battery the device deliberately runs until the cell's protection cuts power —
 that brownout is what calibrates the gauge — checkpointing stats every minute
 once the estimate reads ≤3%. Either way a screen tap or the **RST** button
@@ -359,7 +385,8 @@ cold-boots straight back into the dashboard.
   Support Service"), then run any Claude turn to respawn the bridge. Also check
   `python -m pip show bleak` and that the device is within ~10 m.
 - **Numbers never update while connected** — check `buddy.json` (the token
-  must match the device's Settings → Stats), that the hooks are registered,
+  must match the one under long-press → the **Menu**), that the hooks are
+  registered,
   and that Python 3 is on `PATH`. Events with a wrong token are dropped
   silently by design.
 - **Charging does nothing (battery setup)** — don't use a USB-C PD charger

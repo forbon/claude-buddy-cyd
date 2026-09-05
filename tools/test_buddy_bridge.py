@@ -48,6 +48,13 @@ class TestDecisionStore(unittest.TestCase):
         d.clear()
         self.assertEqual(d.get(), "")
 
+    def test_pass_is_relayed(self):
+        # "pass" = device has on-device approvals switched off; the hook needs
+        # to see it so it can fail open immediately instead of polling out.
+        d = bb.DecisionStore()
+        d.set_from_notify(b'{"askId":9,"decision":"pass"}')
+        self.assertEqual(d.get(), "pass")
+
     def test_junk_notify_ignored(self):
         d = bb.DecisionStore()
         d.set_from_notify(b"not json")

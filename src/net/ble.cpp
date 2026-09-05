@@ -91,6 +91,15 @@ static void applyEvent(JsonVariant d) {
   s.agents = d["agents"] | 0;
   if (d["budget"].is<long>() || d["budget"].is<int>())
     s.budget = d["budget"] | s.budget; // sticky once provided
+  // Plan limits ride along on ordinary events, and only when the statusline has
+  // written them -- so absence means "no data", never "0%": keep the last value and
+  // let the card fall back to tokens until the first one arrives.
+  if (d["r5"].is<int>()) {
+    s.rl5 = d["r5"] | -1;
+    s.rl7 = d["r7"] | -1;
+    s.rl5At = (const char *)(d["r5t"] | "");
+    s.rl7At = (const char *)(d["r7t"] | "");
+  }
   s.actSeq++; // every event ticks this -> renderer switches clip in lock-step
   s.dirty = true;
 }

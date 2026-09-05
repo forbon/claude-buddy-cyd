@@ -40,13 +40,23 @@ void renderStats(bool full) {
   row("Today tok", String(b));
   ui::fmtTok(s.tokensAll, b, sizeof(b));
   row("All-time tok", String(b));
-  // Rough $ estimate (blended rate; the device only sees totals, so it's a
-  // ballpark, hence the "~"). Tune COST_PER_MTOK to your usual model mix.
-  const double COST_PER_MTOK = 6.0;
-  snprintf(b, sizeof(b), "~$%.2f", (double)s.tokens / 1e6 * COST_PER_MTOK);
-  row("Cost today", String(b));
-  snprintf(b, sizeof(b), "~$%.2f", (double)s.tokensAll / 1e6 * COST_PER_MTOK);
-  row("Cost all", String(b));
+  // 13 rows + the hint is the panel's ceiling (see the dy note above), so the
+  // plan-limit rows take the two cost rows' slots when they have data: the cost
+  // figures are a blended-rate guess, the limits are what actually stops you.
+  if (s.rl5 >= 0) {
+    // Reset times come pre-formatted from the PC (its clock, its timezone).
+    row("5h limit", String(s.rl5) + "% / " + s.rl5At);
+    row("Week limit", s.rl7 >= 0 ? String(s.rl7) + "% / " + s.rl7At
+                                 : String("-"));
+  } else {
+    // Rough $ estimate (blended rate; the device only sees totals, so it's a
+    // ballpark, hence the "~"). Tune COST_PER_MTOK to your usual model mix.
+    const double COST_PER_MTOK = 6.0;
+    snprintf(b, sizeof(b), "~$%.2f", (double)s.tokens / 1e6 * COST_PER_MTOK);
+    row("Cost today", String(b));
+    snprintf(b, sizeof(b), "~$%.2f", (double)s.tokensAll / 1e6 * COST_PER_MTOK);
+    row("Cost all", String(b));
+  }
   row("Tool calls", String(s.tools));
   row("Sessions", String(s.sessions));
   row("Turns", String(s.turns));
@@ -57,10 +67,23 @@ void renderStats(bool full) {
            app::battery::hoursLeft(true, app::ctx.brightPct));
   row("Battery (est)", String(b));
   row("Project", s.project.length() ? s.project : String("-"));
-  snprintf(b, sizeof(b), "%lu min", (unsigned long)(millis() / 60000UL));
-  row("Uptime", String(b));
-  snprintf(b, sizeof(b), "%u KB", (unsigned)(ESP.getFreeHeap() / 1024));
-  row("Free heap", String(b));
+  // Uptime and heap share a row so the panel readback below gets one without
+  // tightening dy again (see the pitch note above -- 19 is already the floor).
+  snprintf(b, sizeof(b), "%lu min / %uKB", (unsigned long)(millis() / 60000UL),
+           (unsigned)(ESP.getFreeHeap() / 1024));
+  row("Uptime / heap", String(b));
+  // What the controller reports about itself, not what the build flags claim:
+  // RDID4 answers 9341 on a genuine ILI9341, then the live MADCTL (bit 3 = BGR)
+  // and pixel format (55 = 16bpp). Read once -- these never change after init.
+  // ponytail: diagnostics for the panel colour hunt; drop the row once settled.
+  static char panel[16] = "";
+  if (!panel[0]) {
+    TFT_eSPI &p = ui::tft();
+    snprintf(panel, sizeof(panel), "%02X%02X %02X %02X",
+             p.readcommand8(0xD3, 2), p.readcommand8(0xD3, 3),
+             p.readcommand8(0x0B, 1), p.readcommand8(0x0C, 1));
+  }
+  row("Panel", String(panel));
   row("Link", s.linkUp ? String("BLE connected") : String("advertising"));
 }
 

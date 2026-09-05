@@ -41,6 +41,14 @@ struct AppState {
   int agents = 0;
   // optional daily token budget (from buddy.json); 0 = unset -> no budget gauge.
   long budget = 0;
+  // Plan usage windows, relayed by the statusline via the hook (see HOOKS.md
+  // 2.2): percent of the 5-hour and weekly limits already spent, plus when each
+  // window resets, pre-formatted by the PC in ITS timezone ("18:30", "Sa 09:00")
+  // -- the device has no clock, and a wall time can't drift the way a locally
+  // counted-down deadline would. -1 = never received (API-key users, or a
+  // statusline that doesn't forward them) -> the card keeps showing tokens.
+  int rl5 = -1, rl7 = -1;
+  String rl5At, rl7At;
   // on-device approval of a pending tool call (the PermissionRequest hook sends
   // an "ask" envelope, then polls the bridge, which relays our decision notify).
   String askTool;          // tool awaiting a tap; "" = none pending

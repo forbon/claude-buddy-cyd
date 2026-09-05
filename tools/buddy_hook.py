@@ -24,6 +24,9 @@ import urllib.request
 CFG = os.path.join(os.path.expanduser("~"), ".claude", "buddy.json")
 TOK_STATE = os.path.join(os.path.expanduser("~"), ".claude", "buddy_tokens.json")
 RT_STATE = os.path.join(os.path.expanduser("~"), ".claude", "buddy_rt.json")
+# Written by the statusline (tools/HOOKS.md 2.2) -- the only place Claude Code
+# hands out the plan's usage windows locally. Optional: absent = no limit gauge.
+RL_STATE = os.path.join(os.path.expanduser("~"), ".claude", "buddy_rl.json")
 
 # Bypass any system/env HTTP proxy — the buddy is on the LAN.
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -69,6 +72,36 @@ def _budget():
             return int(json.load(f).get("budget", 0) or 0)
     except Exception:
         return 0
+
+
+def _rate_limits():
+    """Plan usage windows for the device gauge: percent spent of the 5-hour and
+    weekly limits, plus when each one resets, formatted here in the PC's local
+    timezone ("18:30" / "Sa 09:00"). The device has no clock, and an absolute
+    time can't drift the way a counted-down deadline would -- it just stays true
+    until the window rolls and the next event overwrites it. Returns {} when
+    there is no (or stale) data -- the device then keeps showing token counts
+    instead of a made-up 0%."""
+    try:
+        st = os.stat(RL_STATE)
+        if time.time() - st.st_mtime > 3600:
+            return {}  # statusline hasn't run in an hour: don't show a stale bar
+        with open(RL_STATE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        out = {}
+        # the 5h window always resets today-ish, so a bare clock reads cleanest;
+        # the weekly one needs the day to mean anything.
+        for src, pct_key, at_key, fmt in (("five_hour", "r5", "r5t", "%H:%M"),
+                                          ("seven_day", "r7", "r7t", "%a %H:%M")):
+            w = d.get(src) or {}
+            if w.get("pct") is None:
+                continue
+            out[pct_key] = max(0, min(100, int(round(float(w["pct"])))))
+            at = float(w.get("resets_at") or 0)
+            out[at_key] = time.strftime(fmt, time.localtime(at)) if at else ""
+        return out if "r5" in out else {}
+    except Exception:
+        return {}
 
 
 def _intensity(evt, tool):
@@ -140,6 +173,8 @@ def _ask_decision(host, tok, tool, spawn, timeout=26):
             req = urllib.request.Request("http://%s/decision" % host,
                                          headers={"X-Buddy-Token": tok})
             r = json.loads(_opener.open(req, timeout=3).read().decode("utf-8"))
+            if r.get("decision") == "pass":
+                return ""  # device has approvals off -> normal prompt, now
             if r.get("decision") in ("allow", "deny"):
                 return r["decision"]
         except Exception:
@@ -419,6 +454,7 @@ def main():
         bud = _budget()
         if bud:
             payload["budget"] = bud
+        payload.update(_rate_limits())
         if act:
             payload["act"] = act
         if fx:
