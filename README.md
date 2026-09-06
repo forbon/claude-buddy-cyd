@@ -57,8 +57,15 @@ boards](#adapting-to-other-boards).
 Claude Code (PC) ──hook──▶ buddy_hook.py ──HTTP (localhost)──▶ buddy_bridge.py
   SessionStart / UserPromptSubmit / PreToolUse /                    │ BLE GATT
   PostToolUse / Stop / SessionEnd / Notification                    ▼
-                                                            device (Clawd + dashboard)
+                           ▲                                device (Clawd + dashboard)
+Antigravity (agy) ──hook───┘
+  PreInvocation / PostToolUse / Stop
 ```
+
+Antigravity drives the same device through the same helper — see
+[HOOKS.md §5](tools/HOOKS.md#5-antigravity-agy-as-a-second-harness). It reports
+tool calls, turns and sessions, but **not** tokens: `agy` exposes no usage data
+locally at all.
 
 Three pieces; the only radio hop is Bluetooth LE, so there is no network to
 configure — the buddy works anywhere your PC is:
@@ -78,7 +85,8 @@ configure — the buddy works anywhere your PC is:
   and **exits by itself after 10 minutes without events**. No autostart entry,
   no standing drain.
 - **PC (`tools/buddy_hook.py`).** A single self-contained Python script that
-  Claude Code runs on each hook event. It figures out what Claude is doing, reads
+  Claude Code — or Antigravity, §5 of HOOKS.md — runs on each hook event. It
+  figures out what the agent is doing, reads
   the session transcript for the usage rollup, and `POST`s it to the bridge.
   Stats events are **non-blocking and fail open**: if the bridge or device is
   unreachable the error is swallowed, so they can never slow down or break a
@@ -406,7 +414,8 @@ src/            firmware: main.cpp (orchestrator), app/ (state tables, LED
                 render/ (Clawd GIF)
 data/clawd/     Clawd GIF character pack (flashed as the LittleFS image)
 assets/         README preview GIFs
-tools/          buddy_hook.py + buddy_bridge.py + HOOKS.md (PC helpers + setup)
+tools/          buddy_hook.py + buddy_bridge.py + HOOKS.md (PC helpers + setup),
+                hooks.agy.json (Antigravity hook config template)
 docs/           design notes
 platformio.ini  build configuration
 ```

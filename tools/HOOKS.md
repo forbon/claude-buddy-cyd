@@ -1,7 +1,8 @@
-# CYD Buddy — Claude Code hooks setup
+# CYD Buddy — hooks setup
 
-The buddy is driven entirely by Claude Code **hooks** (no official Hardware
-Buddy feature needed). A tiny helper (`buddy_hook.py`) POSTs hook events to a
+The buddy is driven entirely by agent **hooks** (no official Hardware Buddy
+feature needed) — Claude Code below, and Antigravity (`agy`) alongside it in
+§5. A tiny helper (`buddy_hook.py`) POSTs hook events to a
 local **bridge** (`buddy_bridge.py`, spawned on demand, exits when Claude goes
 quiet) which relays them to the CYD over **Bluetooth LE**. By default it is a
 **passive stats dashboard** — every status hook is non-blocking and never
@@ -154,7 +155,72 @@ Each machine keeps its **own** `buddy_tokens.json`, so today/all-time counts are
 per-machine, not merged. If two machines push at once, the device shows whichever
 pushed last.
 
-## 5. Behaviour / safety
+## 5. Antigravity (`agy`) as a second harness
+
+The same helper also runs as an **Antigravity lifecycle hook**, so both agents
+drive the one device. Nothing changes on the CYD or in the bridge; only the
+hook config and a payload translation at the door differ.
+
+Copy [`hooks.agy.json`](hooks.agy.json) to **`~/.gemini/config/hooks.json`**
+(the shared location the `/hooks` command uses; a workspace-local
+`<workspace>/.agents/hooks.json` also works) and replace `<repo>` with the
+absolute path to this checkout:
+
+```json
+{ "cyd-buddy": {
+    "PreInvocation": [ { "command": "python \"<repo>/tools/buddy_hook.py\" agy PreInvocation", "timeout": 8 } ],
+    "PostToolUse":   [ { "matcher": "run_command|manage_task",
+                         "hooks": [ { "command": "python \"<repo>/tools/buddy_hook.py\" agy PostToolUse Bash", "timeout": 8 } ] } ],
+    "Stop":          [ { "command": "python \"<repo>/tools/buddy_hook.py\" agy Stop", "timeout": 8 } ] } }
+```
+
+(Abridged — the shipped file has all five `PostToolUse` matcher groups.) Two
+oddities of agy's contract are why the event name and the tool name are passed
+as **arguments**:
+
+- The payload carries **no event name** at all (no `hook_event_name`).
+- `PostToolUse`'s payload **omits the tool** — only the `matcher` in
+  `hooks.json` knows which tool fired. So each matcher group names the
+  equivalent Claude tool (`Bash`, `Edit`, `Read`, `WebFetch`, `Task`) and the
+  existing activity map does the rest.
+
+Everything else is renaming: `conversationId` → `session_id`,
+`workspacePaths[0]` → `cwd`, `transcriptPath` → `transcript_path`,
+`error` → the `tool_response` shape the wince logic already reads.
+
+### Which events, and why not the others
+
+| agy event | wired | device state |
+| :--- | :--- | :--- |
+| `PreInvocation` | yes | thinking / running |
+| `PostToolUse` | yes | the tool's activity clip; `error` → wince |
+| `Stop` | yes | done + celebrate, "your turn" nudge |
+| `PreToolUse` | **no** | must answer with a permission `decision` and sits in agy's permission path — a dashboard has no business there |
+| `PostInvocation` | **no** | duplicates `PostToolUse` for our purposes |
+
+agy has no `SessionStart`/`SessionEnd`/`Notification` equivalent, so the heart,
+the "bye" and the notification reaction stay Claude-only.
+
+### Tokens: not available
+
+Antigravity's `transcript.jsonl` is a step log
+(`step_index`/`source`/`type`/`tool_calls`) and — checked against real logs —
+contains **no token usage of any kind**. There is no local usage file and no
+usage field in the hook payload either. So agy sessions contribute **tool calls,
+turns and the session count**, and `tok` stays `0`: the card shows the token
+numbers it can actually source rather than an invented one. Both harnesses key
+their sessions by UUID, so they roll up into the same card without colliding.
+
+### Cost of running it
+
+agy hooks are **synchronous and block the agent loop** (there is no `async`
+flag like Claude Code's). That is fine here because the bridge answers `/event`
+with `202` immediately — it never waits for the BLE write. With no bridge
+running the connect is refused instantly, the bridge is spawned, and that one
+event is dropped. Timeout is set to 8 s against the helper's own 5 s HTTP
+timeout.
+
+## 6. Behaviour / safety
 
 - Bridge missing → the hook spawns it and drops that one event (the next event
   heals the display). Device off or out of range → the bridge accepts events

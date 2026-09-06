@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code hook -> CYD buddy.
+"""Claude Code / Antigravity hook -> CYD buddy.
 
 Reads the hook event JSON on stdin and pushes a status + usage snapshot to the
 local BLE bridge (buddy_bridge.py, spawned on demand), which relays it to the
@@ -9,6 +9,10 @@ and never affect Claude's own permission flow.
 
 Per event it sends: current activity, project name, and today's usage rollup
 (tokens, all-time tokens, tool calls, assistant turns, session count).
+
+Also runs as an Antigravity (agy) lifecycle hook -- see _from_agy() and
+tools/HOOKS.md 5. Same device, same payload; the two harnesses just disagree
+about field names, so agy's are translated at the door.
 
 Config: ~/.claude/buddy.json  ->  {"token": "....", "port": 8787 (optional)}
 Fail-open: any bridge/device error is swallowed (never blocks the session).
@@ -104,10 +108,14 @@ def _rate_limits():
         return {}
 
 
-def _intensity(evt, tool):
+def _intensity(tick, tool):
     """Rolling-window session intensity: tool calls in the last 60s (burst) and
     distinct subagent spawns in the last 120s (agents). Persisted so the values
-    decay between events instead of only reflecting this one call."""
+    decay between events instead of only reflecting this one call.
+
+    `tick` = did one tool call just happen? Claude Code counts them at
+    PreToolUse; Antigravity wires no PreToolUse hook (it would have to answer
+    with a permission decision), so there the completed call is what counts."""
     now = time.time()
     try:
         with open(RT_STATE, "r", encoding="utf-8") as f:
@@ -118,7 +126,7 @@ def _intensity(evt, tool):
              and now - t < 60]
     tasks = [t for t in st.get("tasks", []) if isinstance(t, (int, float))
              and now - t < 120]
-    if evt == "PreToolUse":
+    if tick:
         calls.append(now)
         if tool == "Task":
             tasks.append(now)
@@ -296,9 +304,49 @@ def _scan_transcript(path, st=None):
     }
 
 
-def _today_stats(data):
+def _scan_agy(path, st=None):
+    """Rollup of an Antigravity transcript -> {tok, tools, turns}, or None.
+
+    agy's transcript.jsonl is a different animal from Claude's: one line per
+    agent step (`step_index`/`source`/`type`/`tool_calls`), and -- checked
+    against real logs -- it carries NO token usage anywhere. So `tok` stays 0
+    and these sessions contribute tools/turns only; the device shows the token
+    counters it can actually source instead of an invented number.
+
+    `st` is accepted (and ignored) to match _scan_transcript's signature.
+    ponytail: full re-read per event, no byte-offset resume. Real agy
+    transcripts top out under 1 MB (parses in ms); add the resume if one ever
+    grows into the tens of MB the Claude scanner had to handle."""
+    turns = tools = 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    o = json.loads(raw)
+                except Exception:
+                    continue  # the last line may still be mid-write
+                if not isinstance(o, dict) or o.get("source") != "MODEL":
+                    continue
+                tc = o.get("tool_calls")
+                if isinstance(tc, list):
+                    tools += len(tc)
+                if o.get("type") == "PLANNER_RESPONSE":
+                    turns += 1
+    except OSError:
+        return None
+    return {"tok": 0, "tools": tools, "turns": turns}
+
+
+def _today_stats(data, scan=_scan_transcript):
     """Today's tokens/tools/turns/session-count (persisted, resets at local
-    midnight) plus an all-time token counter. Returns a dict or None."""
+    midnight) plus an all-time token counter. Returns a dict or None.
+
+    `scan` is the transcript reader for whichever harness fired: session ids
+    are UUIDs from either, so both harnesses' sessions roll up into one card
+    without colliding in the state file."""
     tp, sid = data.get("transcript_path"), data.get("session_id")
     if not tp or not sid:
         return None
@@ -331,7 +379,7 @@ def _today_stats(data):
         sessions = {}
         carry = new_carry
     prior = sessions.get(sid)
-    sess = _scan_transcript(tp, prior if isinstance(prior, dict) else None)
+    sess = scan(tp, prior if isinstance(prior, dict) else None)
     if sess is None:
         return None
     sessions[sid] = sess
@@ -366,10 +414,58 @@ def _today_stats(data):
     }
 
 
+# Antigravity's five lifecycle events, mapped onto the Claude events that mean
+# the same thing to the device. Only these three are wired: PreToolUse would
+# have to answer with a permission decision (and sits in agy's permission
+# path), and PostInvocation duplicates PostToolUse for our purposes.
+AGY_EVENT = {"PreInvocation": "UserPromptSubmit",
+             "PostToolUse": "PostToolUse",
+             "Stop": "Stop"}
+
+
+def _from_agy(d, argv):
+    """An Antigravity hook payload -> the Claude-Code-shaped dict the rest of
+    this script speaks. Returns None for an event we don't mirror.
+
+    Two things agy leaves to the config rather than the payload (tools/HOOKS.md
+    5): the event name (no hook_event_name field exists) and, on PostToolUse,
+    which tool fired -- that payload omits the tool entirely, only the
+    `matcher` in hooks.json knows. Both arrive here as argv."""
+    evt = AGY_EVENT.get(argv[0] if argv else "")
+    if not evt:
+        return None
+    ws = d.get("workspacePaths")
+    out = {"hook_event_name": evt,
+           "session_id": d.get("conversationId"),
+           "transcript_path": d.get("transcriptPath"),
+           "cwd": ws[0] if isinstance(ws, list) and ws else "",
+           "tool_name": argv[1] if len(argv) > 1 else ""}
+    if evt == "PostToolUse":
+        out["_tick"] = True  # no PreToolUse hook here -> count the call now
+        if d.get("error"):
+            # same shape the Claude path reads, so the wince logic is shared
+            out["tool_response"] = {"error": d["error"]}
+    return out
+
+
 def main():
     try:
         data = json.load(sys.stdin)
     except Exception:
+        data = {}
+    # Antigravity mode: `buddy_hook.py agy <Event> [ClaudeToolName]`. Its hooks
+    # run synchronously and must answer with a JSON object on stdout, so reply
+    # first and unconditionally -- whatever happens below can only be slow or
+    # broken, never a reason to stall agy's loop.
+    scan = _scan_transcript
+    if len(sys.argv) > 1 and sys.argv[1] == "agy":
+        print("{}")
+        sys.stdout.flush()
+        data = _from_agy(data, sys.argv[2:])
+        if data is None:
+            return 0
+        scan = _scan_agy
+    elif not data:
         return 0
     # host timestamp (ms) stamped at hook entry. Claude Code invokes hooks in
     # event order, but they run async and their HTTP posts can arrive reordered,
@@ -400,7 +496,7 @@ def main():
         return 0
 
     extra = {"project": _project(data)}
-    stats = _today_stats(data)
+    stats = _today_stats(data, scan)
     if stats:
         extra.update(stats)
 
@@ -443,7 +539,8 @@ def main():
     # waiting = Claude has handed the turn back to you (finished, or asking) and
     # nothing is running -> the device escalates a "your turn" nudge over time.
     waiting = evt in ("Stop", "Notification")
-    burst, agents = _intensity(evt, data.get("tool_name", ""))
+    burst, agents = _intensity(data.get("_tick") or evt == "PreToolUse",
+                               data.get("tool_name", ""))
 
     try:
         # local calendar date: the device keys its usage-history ring by this,
