@@ -168,11 +168,13 @@ absolute path to this checkout:
 
 ```json
 { "cyd-buddy": {
-    "PreInvocation": [ { "command": "python \"<repo>/tools/buddy_hook.py\" agy PreInvocation", "timeout": 8 } ],
+    "PreInvocation": [ { "command": "python <repo>/tools/buddy_hook.py agy PreInvocation", "timeout": 8 } ],
     "PostToolUse":   [ { "matcher": "run_command|manage_task",
-                         "hooks": [ { "command": "python \"<repo>/tools/buddy_hook.py\" agy PostToolUse Bash", "timeout": 8 } ] } ],
-    "Stop":          [ { "command": "python \"<repo>/tools/buddy_hook.py\" agy Stop", "timeout": 8 } ] } }
+                         "hooks": [ { "command": "python <repo>/tools/buddy_hook.py agy PostToolUse Bash", "timeout": 8 } ] } ],
+    "Stop":          [ { "command": "python <repo>/tools/buddy_hook.py agy Stop", "timeout": 8 } ] } }
 ```
+
+> **Windows tip:** Do not wrap the script path in quotes (`\"...\"`) in `hooks.json`. On Windows, Antigravity executes commands via `cmd /c` using Go's `os/exec`, which escapes quotes into `\"`, causing Python to fail with `[Errno 22] Invalid argument`. Use forward slashes without quotes (e.g. `python E:/claude-buddy-cyd/tools/buddy_hook.py agy PreInvocation`).
 
 (Abridged — the shipped file has all five `PostToolUse` matcher groups.) Two
 oddities of agy's contract are why the event name and the tool name are passed
@@ -193,13 +195,17 @@ Everything else is renaming: `conversationId` → `session_id`,
 | agy event | wired | device state |
 | :--- | :--- | :--- |
 | `PreInvocation` | yes | thinking / running |
-| `PostToolUse` | yes | the tool's activity clip; `error` → wince |
+| `PreToolUse` | yes | real-time activity switch (typing, building, reading, etc.) before tool runs |
+| `PostToolUse` | yes | updates stats; `error` → wince |
 | `Stop` | yes | done + celebrate, "your turn" nudge |
-| `PreToolUse` | **no** | must answer with a permission `decision` and sits in agy's permission path — a dashboard has no business there |
 | `PostInvocation` | **no** | duplicates `PostToolUse` for our purposes |
 
-agy has no `SessionStart`/`SessionEnd`/`Notification` equivalent, so the heart,
-the "bye" and the notification reaction stay Claude-only.
+`PreToolUse` immediately responds with `{"decision": "ask"}` so Antigravity falls
+back to normal user permissions (fail-open), while pushing the active tool's clip to
+the buddy device in real time before long commands or tasks execute.
+
+agy has no `SessionStart`/`SessionEnd`/`Notification` equivalent, but `ask_question`
+is mapped to an amber notification reaction ("NEEDS YOU") on the buddy.
 
 ### Tokens: not available
 

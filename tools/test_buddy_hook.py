@@ -105,10 +105,13 @@ class TestAntigravity(unittest.TestCase):
                          ["PostToolUse", "Bash"])
         self.assertTrue(d["tool_response"]["error"])
 
+    def test_pre_tool_use_maps_to_pre_tool_use(self):
+        d = bh._from_agy(dict(self.COMMON, stepIdx=2), ["PreToolUse", "Bash"])
+        self.assertEqual(d["hook_event_name"], "PreToolUse")
+        self.assertEqual(d["tool_name"], "Bash")
+
     def test_unmirrored_and_missing_events_are_dropped(self):
-        # PreToolUse/PostInvocation are deliberately not wired; a bare call
-        # must not be mistaken for one of the three we do handle.
-        for argv in (["PreToolUse"], ["PostInvocation"], [""], []):
+        for argv in (["PostInvocation"], [""], []):
             self.assertIsNone(bh._from_agy(dict(self.COMMON), argv))
 
     def test_missing_workspace_does_not_crash(self):

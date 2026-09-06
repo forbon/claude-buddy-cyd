@@ -414,11 +414,12 @@ def _today_stats(data, scan=_scan_transcript):
     }
 
 
-# Antigravity's five lifecycle events, mapped onto the Claude events that mean
-# the same thing to the device. Only these three are wired: PreToolUse would
-# have to answer with a permission decision (and sits in agy's permission
-# path), and PostInvocation duplicates PostToolUse for our purposes.
+# Antigravity's lifecycle events, mapped onto the Claude events that mean
+# the same thing to the device. PreToolUse responds immediately with
+# {"decision": "ask"} so agy falls back to normal permissions (fail-open)
+# while the device instantly switches its activity clip before the tool runs.
 AGY_EVENT = {"PreInvocation": "UserPromptSubmit",
+             "PreToolUse": "PreToolUse",
              "PostToolUse": "PostToolUse",
              "Stop": "Stop"}
 
@@ -459,7 +460,13 @@ def main():
     # broken, never a reason to stall agy's loop.
     scan = _scan_transcript
     if len(sys.argv) > 1 and sys.argv[1] == "agy":
-        print("{}")
+        ev_name = sys.argv[2] if len(sys.argv) > 2 else ""
+        if ev_name == "PreToolUse":
+            # agy PreToolUse contract: must output {"decision": "ask"} to defer
+            # to normal permission settings (fail open), rather than {} which denies.
+            print(json.dumps({"decision": "ask"}))
+        else:
+            print("{}")
         sys.stdout.flush()
         data = _from_agy(data, sys.argv[2:])
         if data is None:
@@ -510,14 +517,18 @@ def main():
         "NotebookEdit": "typing", "Bash": "building", "BashOutput": "building",
         "KillShell": "building", "Read": "reading", "Grep": "reading",
         "Glob": "reading", "WebFetch": "thinking", "WebSearch": "thinking",
-        "Task": "juggling",
+        "Task": "juggling", "Ask": "thinking", "Image": "groove",
     }
     act = fx = ""
     if evt in ("PreToolUse", "PostToolUse"):
         running, total = 1, 1
-        act = TOOL_ACT.get(data.get("tool_name", ""), "")
+        tool = data.get("tool_name", "")
+        act = TOOL_ACT.get(tool, "")
         msg = act or "working"
-        if evt == "PostToolUse":
+        if tool == "Ask":
+            fx = "notification"
+            msg = "asking"
+        elif evt == "PostToolUse":
             tr = data.get("tool_response")
             if isinstance(tr, dict) and (tr.get("is_error") or tr.get("error")):
                 fx = "error"  # a tool failed -> brief wince (running stays 1)
@@ -538,7 +549,7 @@ def main():
 
     # waiting = Claude has handed the turn back to you (finished, or asking) and
     # nothing is running -> the device escalates a "your turn" nudge over time.
-    waiting = evt in ("Stop", "Notification")
+    waiting = evt in ("Stop", "Notification") or (evt == "PreToolUse" and data.get("tool_name") == "Ask")
     burst, agents = _intensity(data.get("_tick") or evt == "PreToolUse",
                                data.get("tool_name", ""))
 
